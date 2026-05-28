@@ -46,6 +46,79 @@ impl Event {
     }
 }
 
+/// Fixed column order for CSV output:
+/// timestamp_utc, event, bpm_from, bpm_to, peer_count, playing, note
+pub const CSV_HEADERS: [&str; 7] = [
+    "timestamp_utc",
+    "event",
+    "bpm_from",
+    "bpm_to",
+    "peer_count",
+    "playing",
+    "note",
+];
+
+impl Event {
+    pub fn to_csv_row(&self) -> [String; 7] {
+        let ts = |at: &DateTime<Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        match self {
+            Event::SessionStart {
+                at,
+                quantum,
+                peer_name,
+            } => [
+                ts(at),
+                "session_start".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                format!("quantum={quantum} peer={peer_name}"),
+            ],
+            Event::TempoChanged {
+                at,
+                from_bpm,
+                to_bpm,
+            } => [
+                ts(at),
+                "tempo_changed".into(),
+                from_bpm.to_string(),
+                to_bpm.to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+            Event::PeersChanged { at, count } => [
+                ts(at),
+                "peers_changed".into(),
+                String::new(),
+                String::new(),
+                count.to_string(),
+                String::new(),
+                String::new(),
+            ],
+            Event::TransportChanged { at, playing } => [
+                ts(at),
+                "transport_changed".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                playing.to_string(),
+                String::new(),
+            ],
+            Event::SessionEnd { at, reason } => [
+                ts(at),
+                "session_end".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                reason.clone(),
+            ],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +190,48 @@ mod tests {
     fn at_accessor() {
         let e = Event::PeersChanged { at: t(), count: 1 };
         assert_eq!(e.at(), t());
+    }
+
+    #[test]
+    fn csv_headers_have_seven_columns() {
+        assert_eq!(CSV_HEADERS.len(), 7);
+    }
+
+    #[test]
+    fn tempo_changed_csv_row() {
+        let r = Event::TempoChanged {
+            at: t(),
+            from_bpm: 120.0,
+            to_bpm: 119.5,
+        }
+        .to_csv_row();
+        assert_eq!(r[1], "tempo_changed");
+        assert_eq!(r[2], "120");
+        assert_eq!(r[3], "119.5");
+        assert!(r[4].is_empty());
+        assert!(r[5].is_empty());
+    }
+
+    #[test]
+    fn session_start_csv_row_carries_metadata_in_note() {
+        let r = Event::SessionStart {
+            at: t(),
+            quantum: 4.0,
+            peer_name: "rig".into(),
+        }
+        .to_csv_row();
+        assert_eq!(r[1], "session_start");
+        assert!(r[6].contains("quantum=4"));
+        assert!(r[6].contains("peer=rig"));
+    }
+
+    #[test]
+    fn transport_changed_csv_row_records_playing() {
+        let r = Event::TransportChanged {
+            at: t(),
+            playing: true,
+        }
+        .to_csv_row();
+        assert_eq!(r[5], "true");
     }
 }
