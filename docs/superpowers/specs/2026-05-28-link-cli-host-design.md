@@ -14,7 +14,7 @@ Non-goals (out of scope): changing tempo, starting/stopping transport, audio out
 
 - **Language:** Rust (2021 edition, MSRV 1.85)
 - **Link bindings:** [`rusty_link`](https://crates.io/crates/rusty_link) `0.4` — wraps Ableton's official `abl_link` C-11 wrapper
-- **TUI:** [`ratatui`](https://crates.io/crates/ratatui) `0.30` + [`crossterm`](https://crates.io/crates/crossterm) `0.29`
+- **TUI:** [`ratatui`](https://crates.io/crates/ratatui) `0.29` (use its re-exported `crossterm` backend, no separate crossterm dep)
 - **CLI parsing:** [`clap`](https://crates.io/crates/clap) `4` with derive
 - **Serialization:** [`serde`](https://crates.io/crates/serde) + [`serde_json`](https://crates.io/crates/serde_json), [`csv`](https://crates.io/crates/csv)
 - **Time:** [`chrono`](https://crates.io/crates/chrono) for wall-clock timestamps in event logs
