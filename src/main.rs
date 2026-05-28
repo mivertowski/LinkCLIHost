@@ -1,3 +1,6 @@
+mod cli;
+
 fn main() {
-    println!("linkclihost starting up");
+    let args = cli::Cli::parse_from_env();
+    println!("{:?}", args);
 }
