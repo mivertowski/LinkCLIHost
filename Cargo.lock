@@ -628,6 +628,7 @@ dependencies = [
  "csv",
  "ctrlc",
  "gethostname",
+ "libc",
  "ratatui",
  "rusty_link",
  "serde",

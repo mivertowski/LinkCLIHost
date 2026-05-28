@@ -1,0 +1,7 @@
+# Local-only workaround for bindgen / libclang missing the freestanding
+# C headers (stdbool.h, etc.). Proper fix: install `libclang-dev` (Ubuntu).
+# Copy this file to `.cargo/config.toml` (which is gitignored).
+#
+# Adjust the GCC include path to your installed version.
+[env]
+BINDGEN_EXTRA_CLANG_ARGS = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include"
