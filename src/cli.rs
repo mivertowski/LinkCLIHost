@@ -23,6 +23,34 @@ pub struct Cli {
     /// Initial tempo if we're the first peer in the session.
     #[arg(long, default_value_t = 120.0)]
     pub initial_bpm: f64,
+
+    /// Send MIDI clock (24 PPQN) to this output port (index or name substring).
+    #[arg(long, value_name = "PORT")]
+    pub midi_out: Option<String>,
+
+    /// List available MIDI output ports and exit.
+    #[arg(long)]
+    pub list_midi_ports: bool,
+
+    /// Enable the drum sequencer on the default audio output device.
+    #[arg(long)]
+    pub audio: bool,
+
+    /// Enable the drum sequencer on this audio output device (name substring).
+    #[arg(long, value_name = "DEVICE")]
+    pub audio_out: Option<String>,
+
+    /// List available audio output devices and exit.
+    #[arg(long)]
+    pub list_audio_devices: bool,
+
+    /// Sequencer pattern preset.
+    #[arg(long, default_value = "four-floor")]
+    pub preset: String,
+
+    /// Sequencer output gain (0.0 - 1.0).
+    #[arg(long, default_value_t = 0.8)]
+    pub gain: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +76,20 @@ impl Cli {
                 Some(other) => Err(format!("unsupported log extension: .{other}")),
                 None => Err("log path needs an extension (.jsonl, .ndjson, or .csv)".into()),
             }
+        })
+    }
+
+    pub fn audio_enabled(&self) -> bool {
+        self.audio || self.audio_out.is_some()
+    }
+
+    pub fn preset_idx(&self) -> Result<usize, String> {
+        crate::sequencer::preset_index(&self.preset).ok_or_else(|| {
+            format!(
+                "unknown preset \"{}\"; available: {}",
+                self.preset,
+                crate::sequencer::preset_names().join(", ")
+            )
         })
     }
 
@@ -87,6 +129,49 @@ mod tests {
         assert_eq!(c.quantum, 8.0);
         assert_eq!(c.name.as_deref(), Some("foo"));
         assert!(c.no_tui);
+    }
+
+    #[test]
+    fn audio_defaults_off() {
+        let c = parse(&[]);
+        assert!(!c.audio_enabled());
+        assert!(c.midi_out.is_none());
+        assert_eq!(c.preset, "four-floor");
+        assert_eq!(c.gain, 0.8);
+    }
+
+    #[test]
+    fn audio_out_implies_audio_enabled() {
+        let c = parse(&["--audio-out", "pulse"]);
+        assert!(c.audio_enabled());
+        assert_eq!(c.audio_out.as_deref(), Some("pulse"));
+    }
+
+    #[test]
+    fn audio_flag_enables_default_device() {
+        let c = parse(&["--audio"]);
+        assert!(c.audio_enabled());
+        assert!(c.audio_out.is_none());
+    }
+
+    #[test]
+    fn known_preset_resolves() {
+        let c = parse(&["--preset", "breaks"]);
+        assert_eq!(c.preset_idx(), Ok(2));
+    }
+
+    #[test]
+    fn unknown_preset_is_error() {
+        let c = parse(&["--preset", "polka"]);
+        let err = c.preset_idx().unwrap_err();
+        assert!(err.contains("polka"));
+        assert!(err.contains("four-floor"));
+    }
+
+    #[test]
+    fn midi_out_parses() {
+        let c = parse(&["--midi-out", "Midi Through"]);
+        assert_eq!(c.midi_out.as_deref(), Some("Midi Through"));
     }
 
     #[test]

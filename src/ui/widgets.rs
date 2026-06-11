@@ -1,4 +1,5 @@
 use crate::app::TempoChange;
+use crate::sequencer::TRACK_NAMES;
 use crate::ui::Snapshot;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
@@ -10,10 +11,30 @@ use std::time::Duration;
 
 pub fn header(snap: &Snapshot) -> Paragraph<'static> {
     let lines = vec![
-        kv("Tempo", format!("{:.2} BPM", snap.bpm), "Quantum", format!("{}", snap.quantum as u64)),
-        kv("Beat", format!("{:.2}", snap.beat), "Phase", format!("{:.2} / {}", snap.phase, snap.quantum as u64)),
-        kv("Playing", yes_no(snap.playing), "Peers", snap.peers.to_string()),
-        kv("Uptime", fmt_duration(snap.uptime), "Link clock", format!("{} \u{00B5}s", snap.link_clock_micros)),
+        kv(
+            "Tempo",
+            format!("{:.2} BPM", snap.bpm),
+            "Quantum",
+            format!("{}", snap.quantum as u64),
+        ),
+        kv(
+            "Beat",
+            format!("{:.2}", snap.beat),
+            "Phase",
+            format!("{:.2} / {}", snap.phase, snap.quantum as u64),
+        ),
+        kv(
+            "Playing",
+            yes_no(snap.playing),
+            "Peers",
+            snap.peers.to_string(),
+        ),
+        kv(
+            "Uptime",
+            fmt_duration(snap.uptime),
+            "Link clock",
+            format!("{} \u{00B5}s", snap.link_clock_micros),
+        ),
         kv(
             "Tempo \u{03C3}",
             format!("{:.2} BPM", snap.tempo_stability_bpm),
@@ -33,9 +54,74 @@ pub fn phase_bar(snap: &Snapshot) -> Gauge<'static> {
     };
     Gauge::default()
         .block(Block::default().borders(Borders::ALL).title(" Phase "))
-        .gauge_style(Style::default().fg(if snap.link_online { Color::Green } else { Color::DarkGray }))
+        .gauge_style(Style::default().fg(if snap.link_online {
+            Color::Green
+        } else {
+            Color::DarkGray
+        }))
         .ratio(ratio)
         .label(format!("{:.2}/{:.0}", snap.phase, snap.quantum))
+}
+
+pub fn sequencer(snap: &Snapshot) -> Paragraph<'static> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    match &snap.seq {
+        Some(seq) => {
+            for (track, row) in seq.pattern.iter().enumerate() {
+                let mut spans = vec![Span::styled(
+                    format!("  {:<4}", TRACK_NAMES[track]),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )];
+                for (step, on) in row.iter().enumerate() {
+                    let cell = if *on { "\u{25A0} " } else { "\u{00B7} " };
+                    let mut style = Style::default();
+                    if *on {
+                        style = style.fg(Color::Cyan);
+                    }
+                    if seq.current_step == step as i64 {
+                        style = style.add_modifier(Modifier::REVERSED);
+                    }
+                    spans.push(Span::styled(cell, style));
+                }
+                lines.push(Line::from(spans));
+            }
+            let step = if seq.current_step >= 0 {
+                format!("{:02}", seq.current_step + 1)
+            } else {
+                "--".into()
+            };
+            lines.push(Line::from(format!(
+                "  preset: {}   step: {step}/16   muted: {}",
+                seq.preset_name,
+                yes_no(seq.muted),
+            )));
+            lines.push(Line::from(format!(
+                "  audio: {} @ {} Hz   stream errors: {}",
+                seq.device, seq.sample_rate, seq.stream_errors
+            )));
+        }
+        None => {
+            lines.push(Line::from(
+                "  audio: off (enable with --audio / --audio-out <device>)",
+            ));
+        }
+    }
+
+    lines.push(match &snap.midi {
+        // Jitter stats lead so a long port name truncates instead of them.
+        Some(m) => Line::from(format!(
+            "  midi clock: \u{03BC} {:.0} \u{00B5}s  max {} \u{00B5}s  last {} \u{00B5}s  ticks {}  \u{2192} {}",
+            m.mean_abs_err_us, m.max_abs_err_us, m.last_err_us, m.ticks, m.port
+        )),
+        None => Line::from("  midi clock: off (enable with --midi-out <port>)"),
+    });
+
+    Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Sequencer / Sync out "),
+    )
 }
 
 pub fn history(changes: &[TempoChange]) -> List<'static> {
@@ -67,16 +153,25 @@ pub fn footer(snap: &Snapshot) -> Paragraph<'static> {
         Some(p) => format!("log: {p}"),
         None => "log: none".into(),
     };
+    let key = |k: &'static str| Span::styled(k, Style::default().add_modifier(Modifier::REVERSED));
     let line = Line::from(vec![
-        Span::styled(" q ", Style::default().add_modifier(Modifier::REVERSED)),
-        Span::raw(" quit"),
-        Span::raw("   "),
+        Span::raw(" "),
+        key("q"),
+        Span::raw(" quit  "),
+        key("\u{2423}"),
+        Span::raw(" play  "),
+        key("p"),
+        Span::raw(" preset  "),
+        key("m"),
+        Span::raw(" mute  "),
+        key("+-"),
+        Span::raw(" bpm  "),
         if snap.link_online {
             Span::styled("link: online", Style::default().fg(Color::Green))
         } else {
             Span::styled("link: offline", Style::default().fg(Color::Red))
         },
-        Span::raw("   "),
+        Span::raw("  "),
         Span::raw(log),
     ]);
     Paragraph::new(line).block(Block::default().borders(Borders::ALL))
@@ -86,6 +181,7 @@ pub fn split(area: Rect) -> Vec<Rect> {
     Layout::vertical([
         Constraint::Length(7), // header (5 rows + borders)
         Constraint::Length(3), // phase bar
+        Constraint::Length(9), // sequencer grid + status (7 rows + borders)
         Constraint::Min(4),    // history list
         Constraint::Length(3), // footer
     ])
@@ -166,6 +262,31 @@ mod tests {
             tempo_stability_bpm: 0.12,
             log_path: Some("./events.jsonl".into()),
             link_online: true,
+            seq: Some(crate::ui::SeqDisplay {
+                preset_name: "four-floor",
+                pattern: {
+                    let p = &crate::sequencer::PRESETS[0];
+                    let mut rows = [[false; crate::sequencer::STEPS]; crate::sequencer::TRACKS];
+                    for (t, row) in rows.iter_mut().enumerate() {
+                        for (s, cell) in row.iter_mut().enumerate() {
+                            *cell = p.step(t, s);
+                        }
+                    }
+                    rows
+                },
+                current_step: 5,
+                muted: false,
+                device: "pulse".into(),
+                sample_rate: 48_000,
+                stream_errors: 0,
+            }),
+            midi: Some(crate::midi_clock::MidiClockSnapshot {
+                port: "Midi Through".into(),
+                ticks: 1_234,
+                last_err_us: 42,
+                mean_abs_err_us: 55.0,
+                max_abs_err_us: 310,
+            }),
         }
     }
 
@@ -177,8 +298,9 @@ mod tests {
                 let chunks = split(f.area());
                 f.render_widget(header(snap), chunks[0]);
                 f.render_widget(phase_bar(snap), chunks[1]);
-                f.render_widget(history(&snap.recent_tempo_changes), chunks[2]);
-                f.render_widget(footer(snap), chunks[3]);
+                f.render_widget(sequencer(snap), chunks[2]);
+                f.render_widget(history(&snap.recent_tempo_changes), chunks[3]);
+                f.render_widget(footer(snap), chunks[4]);
             })
             .unwrap();
         terminal.backend().buffer().clone()
@@ -198,14 +320,14 @@ mod tests {
 
     #[test]
     fn header_renders_tempo_and_peer() {
-        let buf = render_to_buffer(&sample_snapshot(), 70, 18);
+        let buf = render_to_buffer(&sample_snapshot(), 80, 30);
         assert!(buffer_contains(&buf, "120.00"));
         assert!(buffer_contains(&buf, "rig"));
     }
 
     #[test]
     fn history_renders_tempo_change_row() {
-        let buf = render_to_buffer(&sample_snapshot(), 70, 18);
+        let buf = render_to_buffer(&sample_snapshot(), 80, 30);
         assert!(buffer_contains(&buf, "120.50"));
         assert!(buffer_contains(&buf, "120.00"));
     }
@@ -214,13 +336,13 @@ mod tests {
     fn empty_history_shows_placeholder() {
         let mut snap = sample_snapshot();
         snap.recent_tempo_changes.clear();
-        let buf = render_to_buffer(&snap, 70, 18);
+        let buf = render_to_buffer(&snap, 80, 30);
         assert!(buffer_contains(&buf, "no tempo changes yet"));
     }
 
     #[test]
     fn footer_shows_log_path() {
-        let buf = render_to_buffer(&sample_snapshot(), 70, 18);
+        let buf = render_to_buffer(&sample_snapshot(), 80, 30);
         assert!(buffer_contains(&buf, "events.jsonl"));
     }
 
@@ -228,8 +350,37 @@ mod tests {
     fn footer_shows_log_none() {
         let mut snap = sample_snapshot();
         snap.log_path = None;
-        let buf = render_to_buffer(&snap, 70, 18);
+        let buf = render_to_buffer(&snap, 80, 30);
         assert!(buffer_contains(&buf, "log: none"));
+    }
+
+    #[test]
+    fn sequencer_renders_tracks_preset_and_midi_stats() {
+        let buf = render_to_buffer(&sample_snapshot(), 80, 30);
+        assert!(buffer_contains(&buf, "BD"));
+        assert!(buffer_contains(&buf, "TOM"));
+        assert!(buffer_contains(&buf, "four-floor"));
+        assert!(buffer_contains(&buf, "pulse"));
+        assert!(buffer_contains(&buf, "Midi Through"));
+        assert!(buffer_contains(&buf, "ticks 1234"));
+    }
+
+    #[test]
+    fn sequencer_disabled_shows_hints() {
+        let mut snap = sample_snapshot();
+        snap.seq = None;
+        snap.midi = None;
+        let buf = render_to_buffer(&snap, 80, 30);
+        assert!(buffer_contains(&buf, "audio: off"));
+        assert!(buffer_contains(&buf, "midi clock: off"));
+    }
+
+    #[test]
+    fn sequencer_stopped_shows_dashes_for_step() {
+        let mut snap = sample_snapshot();
+        snap.seq.as_mut().unwrap().current_step = -1;
+        let buf = render_to_buffer(&snap, 80, 30);
+        assert!(buffer_contains(&buf, "step: --/16"));
     }
 
     #[test]

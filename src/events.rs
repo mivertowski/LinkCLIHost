@@ -22,6 +22,14 @@ pub enum Event {
         at: DateTime<Utc>,
         playing: bool,
     },
+    /// Periodic MIDI clock jitter report (scheduling error vs the Link timeline).
+    ClockStats {
+        at: DateTime<Utc>,
+        port: String,
+        ticks: u64,
+        mean_abs_err_us: f64,
+        max_abs_err_us: i64,
+    },
     SessionEnd {
         at: DateTime<Utc>,
         reason: String,
@@ -35,6 +43,7 @@ impl Event {
             | Event::TempoChanged { at, .. }
             | Event::PeersChanged { at, .. }
             | Event::TransportChanged { at, .. }
+            | Event::ClockStats { at, .. }
             | Event::SessionEnd { at, .. } => *at,
         }
     }
@@ -105,6 +114,23 @@ impl Event {
                 String::new(),
                 playing.to_string(),
                 String::new(),
+            ],
+            Event::ClockStats {
+                at,
+                port,
+                ticks,
+                mean_abs_err_us,
+                max_abs_err_us,
+            } => [
+                ts(at),
+                "clock_stats".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                format!(
+                    "port={port} ticks={ticks} mean_abs_us={mean_abs_err_us:.1} max_abs_us={max_abs_err_us}"
+                ),
             ],
             Event::SessionEnd { at, reason } => [
                 ts(at),
@@ -184,6 +210,39 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(e.to_jsonl().unwrap().trim()).unwrap();
         assert_eq!(v["type"], "session_end");
         assert_eq!(v["reason"], "sigint");
+    }
+
+    #[test]
+    fn clock_stats_jsonl() {
+        let e = Event::ClockStats {
+            at: t(),
+            port: "Midi Through".into(),
+            ticks: 480,
+            mean_abs_err_us: 42.5,
+            max_abs_err_us: 310,
+        };
+        let v: serde_json::Value = serde_json::from_str(e.to_jsonl().unwrap().trim()).unwrap();
+        assert_eq!(v["type"], "clock_stats");
+        assert_eq!(v["port"], "Midi Through");
+        assert_eq!(v["ticks"], 480);
+        assert_eq!(v["max_abs_err_us"], 310);
+    }
+
+    #[test]
+    fn clock_stats_csv_row_carries_metrics_in_note() {
+        let r = Event::ClockStats {
+            at: t(),
+            port: "Midi Through".into(),
+            ticks: 480,
+            mean_abs_err_us: 42.5,
+            max_abs_err_us: 310,
+        }
+        .to_csv_row();
+        assert_eq!(r[1], "clock_stats");
+        assert!(r[6].contains("port=Midi Through"));
+        assert!(r[6].contains("ticks=480"));
+        assert!(r[6].contains("mean_abs_us=42.5"));
+        assert!(r[6].contains("max_abs_us=310"));
     }
 
     #[test]
