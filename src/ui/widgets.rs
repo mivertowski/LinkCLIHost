@@ -14,14 +14,14 @@ pub fn header(snap: &Snapshot) -> Paragraph<'static> {
         kv(
             "Tempo",
             format!("{:.2} BPM", snap.bpm),
-            "Quantum",
-            format!("{}", snap.quantum as u64),
+            "Meter",
+            format!("{} (q={})", snap.meter_label, fmt_quantum(snap.quantum)),
         ),
         kv(
             "Beat",
             format!("{:.2}", snap.beat),
             "Phase",
-            format!("{:.2} / {}", snap.phase, snap.quantum as u64),
+            format!("{:.2} / {}", snap.phase, fmt_quantum(snap.quantum)),
         ),
         kv(
             "Playing",
@@ -60,7 +60,7 @@ pub fn phase_bar(snap: &Snapshot) -> Gauge<'static> {
             Color::DarkGray
         }))
         .ratio(ratio)
-        .label(format!("{:.2}/{:.0}", snap.phase, snap.quantum))
+        .label(format!("{:.2}/{}", snap.phase, fmt_quantum(snap.quantum)))
 }
 
 pub fn sequencer(snap: &Snapshot) -> Paragraph<'static> {
@@ -73,7 +73,7 @@ pub fn sequencer(snap: &Snapshot) -> Paragraph<'static> {
                     format!("  {:<4}", TRACK_NAMES[track]),
                     Style::default().add_modifier(Modifier::BOLD),
                 )];
-                for (step, on) in row.iter().enumerate() {
+                for (step, on) in row.iter().take(seq.steps).enumerate() {
                     let cell = if *on { "\u{25A0} " } else { "\u{00B7} " };
                     let mut style = Style::default();
                     if *on {
@@ -92,8 +92,9 @@ pub fn sequencer(snap: &Snapshot) -> Paragraph<'static> {
                 "--".into()
             };
             lines.push(Line::from(format!(
-                "  preset: {}   step: {step}/16   muted: {}",
+                "  preset: {}   step: {step}/{}   muted: {}",
                 seq.preset_name,
+                seq.steps,
                 yes_no(seq.muted),
             )));
             lines.push(Line::from(format!(
@@ -224,6 +225,15 @@ fn last_delta(change: &Option<TempoChange>) -> String {
     }
 }
 
+/// Quantum without a trailing ".0" for whole values: 4 -> "4", 3.5 -> "3.5".
+fn fmt_quantum(q: f64) -> String {
+    if q.fract() == 0.0 {
+        format!("{q:.0}")
+    } else {
+        format!("{q}")
+    }
+}
+
 fn fmt_duration(d: Duration) -> String {
     let secs = d.as_secs();
     let h = secs / 3600;
@@ -238,6 +248,26 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
 
+    fn seq_display_for(steps: usize) -> crate::ui::SeqDisplay {
+        let p = &crate::sequencer::presets_for(steps)[0];
+        let mut pattern = [[false; crate::sequencer::MAX_STEPS]; crate::sequencer::TRACKS];
+        for (t, row) in pattern.iter_mut().enumerate() {
+            for (s, cell) in row.iter_mut().take(steps).enumerate() {
+                *cell = p.step(t, s);
+            }
+        }
+        crate::ui::SeqDisplay {
+            preset_name: p.name,
+            pattern,
+            steps,
+            current_step: 5,
+            muted: false,
+            device: "pulse".into(),
+            sample_rate: 48_000,
+            stream_errors: 0,
+        }
+    }
+
     fn sample_snapshot() -> Snapshot {
         Snapshot {
             peer_name: "rig".into(),
@@ -245,6 +275,7 @@ mod tests {
             beat: 142.37,
             phase: 2.37,
             quantum: 4.0,
+            meter_label: "4/4".into(),
             playing: true,
             peers: 3,
             link_clock_micros: 874_632_199,
@@ -262,24 +293,7 @@ mod tests {
             tempo_stability_bpm: 0.12,
             log_path: Some("./events.jsonl".into()),
             link_online: true,
-            seq: Some(crate::ui::SeqDisplay {
-                preset_name: "four-floor",
-                pattern: {
-                    let p = &crate::sequencer::PRESETS[0];
-                    let mut rows = [[false; crate::sequencer::STEPS]; crate::sequencer::TRACKS];
-                    for (t, row) in rows.iter_mut().enumerate() {
-                        for (s, cell) in row.iter_mut().enumerate() {
-                            *cell = p.step(t, s);
-                        }
-                    }
-                    rows
-                },
-                current_step: 5,
-                muted: false,
-                device: "pulse".into(),
-                sample_rate: 48_000,
-                stream_errors: 0,
-            }),
+            seq: Some(seq_display_for(16)),
             midi: Some(crate::midi_clock::MidiClockSnapshot {
                 port: "Midi Through".into(),
                 ticks: 1_234,
@@ -373,6 +387,43 @@ mod tests {
         let buf = render_to_buffer(&snap, 80, 30);
         assert!(buffer_contains(&buf, "audio: off"));
         assert!(buffer_contains(&buf, "midi clock: off"));
+    }
+
+    #[test]
+    fn header_shows_meter_label() {
+        let buf = render_to_buffer(&sample_snapshot(), 80, 30);
+        assert!(buffer_contains(&buf, "4/4 (q=4)"));
+    }
+
+    #[test]
+    fn odd_meter_renders_label_and_step_count() {
+        let mut snap = sample_snapshot();
+        snap.quantum = 3.5;
+        snap.meter_label = "7/8".into();
+        snap.seq = Some(seq_display_for(14));
+        let buf = render_to_buffer(&snap, 80, 30);
+        assert!(buffer_contains(&buf, "7/8 (q=3.5)"));
+        assert!(buffer_contains(&buf, "step: 06/14"));
+    }
+
+    #[test]
+    fn five_four_grid_shows_twenty_columns() {
+        let mut snap = sample_snapshot();
+        snap.quantum = 5.0;
+        snap.meter_label = "5/4".into();
+        snap.seq = Some(seq_display_for(20));
+        let buf = render_to_buffer(&snap, 80, 30);
+        assert!(buffer_contains(&buf, "step: 06/20"));
+        // BD row: 5 kicks of the four-floor 5/4 bank, 20 cells wide
+        let kicks = "\u{25A0} \u{00B7} \u{00B7} \u{00B7} ".repeat(5);
+        assert!(buffer_contains(&buf, kicks.trim_end()));
+    }
+
+    #[test]
+    fn quantum_formats_without_trailing_zero() {
+        assert_eq!(fmt_quantum(4.0), "4");
+        assert_eq!(fmt_quantum(3.5), "3.5");
+        assert_eq!(fmt_quantum(5.0), "5");
     }
 
     #[test]

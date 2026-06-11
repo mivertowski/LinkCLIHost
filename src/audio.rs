@@ -7,7 +7,7 @@
 //! falls. All shared control state is atomic, so the audio thread never
 //! blocks on a lock.
 
-use crate::sequencer::{self, PRESETS, STEPS_PER_BEAT, TRACKS};
+use crate::sequencer::{self, NUM_PRESETS, STEPS_PER_BEAT, TRACKS};
 use crate::synth::DrumSynth;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
@@ -35,10 +35,11 @@ impl AudioShared {
     }
 
     pub fn next_preset(&self) {
-        let n = PRESETS.len();
         let _ = self
             .preset_idx
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |i| Some((i + 1) % n));
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |i| {
+                Some((i + 1) % NUM_PRESETS)
+            });
     }
 
     pub fn toggle_mute(&self) {
@@ -139,6 +140,10 @@ where
     let sample_rate = config.sample_rate.0 as f64;
     let mut synth = DrumSynth::new(sample_rate as f32, gain);
     let mut state = SessionState::new();
+    // Bar length and preset bank are fixed for the run (derived from the
+    // meter/quantum), so resolve them once outside the callback.
+    let steps = sequencer::steps_for_quantum(quantum);
+    let bank = sequencer::presets_for(steps);
     // Global 16th-note counter of the last triggered tick; avoids
     // double-triggering across buffer boundaries.
     let mut last_tick: i64 = i64::MIN;
@@ -164,13 +169,13 @@ where
                 let b1 = state.beat_at_time(t0 + buf_us, quantum);
                 let beats_per_frame = (b1 - b0) / frames.max(1) as f64;
 
-                let preset = &PRESETS[shared.preset_idx.load(Ordering::Relaxed) % PRESETS.len()];
+                let preset = &bank[shared.preset_idx.load(Ordering::Relaxed) % NUM_PRESETS];
                 let muted = shared.muted.load(Ordering::Relaxed);
 
                 if playing {
                     shared
                         .current_step
-                        .store(step_from_beat(b0, quantum) as i64, Ordering::Relaxed);
+                        .store(step_from_beat(b0, quantum, steps) as i64, Ordering::Relaxed);
                 } else {
                     shared.current_step.store(-1, Ordering::Relaxed);
                 }
@@ -181,7 +186,8 @@ where
                         let tick = (beat * STEPS_PER_BEAT).floor() as i64;
                         if tick != last_tick {
                             last_tick = tick;
-                            let hits: [bool; TRACKS] = preset.hits(step_from_beat(beat, quantum));
+                            let hits: [bool; TRACKS] =
+                                preset.hits(step_from_beat(beat, quantum, steps));
                             synth.trigger(&hits);
                         }
                     }
@@ -204,8 +210,8 @@ where
 
 /// Step index for a Link beat value. Link defines phase = beat mod quantum,
 /// so this stays aligned with what other peers display.
-fn step_from_beat(beat: f64, quantum: f64) -> usize {
-    sequencer::step_at_phase(beat.rem_euclid(quantum.max(f64::EPSILON)))
+fn step_from_beat(beat: f64, quantum: f64, steps: usize) -> usize {
+    sequencer::step_at_phase(beat.rem_euclid(quantum.max(f64::EPSILON)), steps)
 }
 
 #[cfg(test)]
@@ -214,16 +220,26 @@ mod tests {
 
     #[test]
     fn step_from_beat_wraps_at_quantum() {
-        assert_eq!(step_from_beat(0.0, 4.0), 0);
-        assert_eq!(step_from_beat(4.0, 4.0), 0);
-        assert_eq!(step_from_beat(5.25, 4.0), 5);
-        assert_eq!(step_from_beat(-0.25, 4.0), 15);
+        assert_eq!(step_from_beat(0.0, 4.0, 16), 0);
+        assert_eq!(step_from_beat(4.0, 4.0, 16), 0);
+        assert_eq!(step_from_beat(5.25, 4.0, 16), 5);
+        assert_eq!(step_from_beat(-0.25, 4.0, 16), 15);
+    }
+
+    #[test]
+    fn step_from_beat_covers_odd_meters() {
+        // 5/4: quantum 5, 20 steps
+        assert_eq!(step_from_beat(4.75, 5.0, 20), 19);
+        assert_eq!(step_from_beat(5.0, 5.0, 20), 0);
+        // 7/8: quantum 3.5, 14 steps
+        assert_eq!(step_from_beat(3.25, 3.5, 14), 13);
+        assert_eq!(step_from_beat(3.5, 3.5, 14), 0);
     }
 
     #[test]
     fn shared_preset_cycles() {
         let s = AudioShared::new(0);
-        for _ in 0..PRESETS.len() {
+        for _ in 0..NUM_PRESETS {
             s.next_preset();
         }
         assert_eq!(s.preset_idx.load(Ordering::SeqCst), 0);

@@ -4,6 +4,7 @@ mod cli;
 mod events;
 mod link;
 mod logger;
+mod meter;
 mod midi_clock;
 mod sequencer;
 mod synth;
@@ -16,7 +17,7 @@ use crate::events::Event;
 use crate::link::{LinkSession, LinkSnapshot};
 use crate::logger::{spawn as spawn_logger, LoggerHandle};
 use crate::midi_clock::MidiClock;
-use crate::sequencer::{PRESETS, STEPS, TRACKS};
+use crate::sequencer::{presets_for, steps_for_quantum, MAX_STEPS, NUM_PRESETS, TRACKS};
 use crate::ui::{SeqDisplay, Snapshot};
 use chrono::Utc;
 use clap::Parser;
@@ -67,6 +68,7 @@ fn run(args: Cli) -> Result<(), String> {
     }
 
     let preset_idx = args.preset_idx()?;
+    let (quantum, meter_label) = args.resolved_meter()?;
 
     let log_format = match args.log_format() {
         Some(Ok(f)) => Some(f),
@@ -89,7 +91,7 @@ fn run(args: Cli) -> Result<(), String> {
     let shared = Arc::new(Mutex::new(AppState::new(args.initial_bpm)));
     let mut link = LinkSession::new(
         args.initial_bpm,
-        args.quantum,
+        quantum,
         shared.clone(),
         log_sender.clone(),
     );
@@ -97,7 +99,7 @@ fn run(args: Cli) -> Result<(), String> {
     let midi = match &args.midi_out {
         Some(sel) => Some(midi_clock::spawn(
             link.handle(),
-            args.quantum,
+            quantum,
             sel,
             log_sender.clone(),
         )?),
@@ -108,7 +110,7 @@ fn run(args: Cli) -> Result<(), String> {
         let s = Arc::new(AudioShared::new(preset_idx));
         let engine = audio::start(
             link.handle(),
-            args.quantum,
+            quantum,
             s.clone(),
             args.audio_out.as_deref(),
             args.gain.clamp(0.0, 1.0),
@@ -126,7 +128,7 @@ fn run(args: Cli) -> Result<(), String> {
     if let Some(tx) = &log_sender {
         let _ = tx.send(Event::SessionStart {
             at: Utc::now(),
-            quantum: args.quantum,
+            quantum,
             peer_name: peer_name.clone(),
         });
     }
@@ -146,7 +148,8 @@ fn run(args: Cli) -> Result<(), String> {
             shared.clone(),
             shutdown.clone(),
             peer_name.clone(),
-            args.quantum,
+            quantum,
+            meter_label,
             log_display,
             &outputs,
         )
@@ -154,7 +157,8 @@ fn run(args: Cli) -> Result<(), String> {
         run_headless(
             &mut link,
             shutdown.clone(),
-            args.quantum,
+            quantum,
+            meter_label,
             peer_name.clone(),
             &outputs,
         )
@@ -216,6 +220,7 @@ fn run_tui(
     shutdown: Arc<AtomicBool>,
     peer_name: String,
     quantum: f64,
+    meter_label: String,
     log_path: Option<String>,
     outputs: &Outputs,
 ) -> Result<(), String> {
@@ -232,6 +237,7 @@ fn run_tui(
         shutdown,
         peer_name,
         quantum,
+        meter_label,
         log_path,
         outputs,
     );
@@ -249,6 +255,7 @@ fn tui_loop<B: ratatui::backend::Backend>(
     shutdown: Arc<AtomicBool>,
     peer_name: String,
     quantum: f64,
+    meter_label: String,
     log_path: Option<String>,
     outputs: &Outputs,
 ) -> Result<(), String> {
@@ -273,6 +280,7 @@ fn tui_loop<B: ratatui::backend::Backend>(
             &link_snap,
             peer_name.clone(),
             quantum,
+            meter_label.clone(),
             log_path.clone(),
             link.online(),
             outputs,
@@ -321,19 +329,22 @@ fn poll_input(timeout: Duration) -> Result<Option<Action>, String> {
     Ok(None)
 }
 
-fn seq_display(outputs: &Outputs) -> Option<SeqDisplay> {
+fn seq_display(outputs: &Outputs, quantum: f64) -> Option<SeqDisplay> {
     let shared = outputs.audio_shared.as_ref()?;
     let engine = outputs.audio.as_ref()?;
-    let preset = &PRESETS[shared.preset_idx.load(Ordering::Relaxed) % PRESETS.len()];
-    let mut pattern = [[false; STEPS]; TRACKS];
+    let steps = steps_for_quantum(quantum);
+    let bank = presets_for(steps);
+    let preset = &bank[shared.preset_idx.load(Ordering::Relaxed) % NUM_PRESETS];
+    let mut pattern = [[false; MAX_STEPS]; TRACKS];
     for (t, row) in pattern.iter_mut().enumerate() {
-        for (s, cell) in row.iter_mut().enumerate() {
+        for (s, cell) in row.iter_mut().take(steps).enumerate() {
             *cell = preset.step(t, s);
         }
     }
     Some(SeqDisplay {
         preset_name: preset.name,
         pattern,
+        steps,
         current_step: shared.current_step.load(Ordering::Relaxed),
         muted: shared.muted.load(Ordering::Relaxed),
         device: engine.device_name.clone(),
@@ -348,6 +359,7 @@ fn build_snapshot(
     link_snap: &LinkSnapshot,
     peer_name: String,
     quantum: f64,
+    meter_label: String,
     log_path: Option<String>,
     link_online: bool,
     outputs: &Outputs,
@@ -359,6 +371,7 @@ fn build_snapshot(
         beat: link_snap.beat,
         phase: link_snap.phase,
         quantum,
+        meter_label,
         playing: link_snap.playing,
         peers: st.peers,
         link_clock_micros: link_snap.clock_micros,
@@ -368,7 +381,7 @@ fn build_snapshot(
         tempo_stability_bpm: st.tempo_stability_bpm(),
         log_path,
         link_online,
-        seq: seq_display(outputs),
+        seq: seq_display(outputs, quantum),
         midi: outputs.midi.as_ref().map(MidiClock::snapshot),
     }
 }
@@ -377,10 +390,13 @@ fn run_headless(
     link: &mut LinkSession,
     shutdown: Arc<AtomicBool>,
     quantum: f64,
+    meter_label: String,
     peer_name: String,
     outputs: &Outputs,
 ) -> Result<(), String> {
-    eprintln!("linkclihost (headless) \u{2014} peer={peer_name} quantum={quantum}");
+    eprintln!(
+        "linkclihost (headless) \u{2014} peer={peer_name} meter={meter_label} quantum={quantum}"
+    );
     if let Some(m) = &outputs.midi {
         eprintln!("midi clock -> {}", m.snapshot().port);
     }

@@ -4,9 +4,14 @@ use std::path::PathBuf;
 #[derive(Parser, Debug, Clone, PartialEq)]
 #[command(name = "linkclihost", version, about = "Ableton Link monitor")]
 pub struct Cli {
-    /// Beats per cycle (musical bar).
+    /// Beats per cycle (musical bar), in quarter notes. See also --meter.
     #[arg(short = 'q', long, default_value_t = 4.0)]
     pub quantum: f64,
+
+    /// Time signature, e.g. 4/4, 5/4, 7/8, 6/8. Sets the Link quantum and
+    /// the sequencer bar length. Mutually exclusive with --quantum.
+    #[arg(long, value_name = "N/D", conflicts_with = "quantum")]
+    pub meter: Option<String>,
 
     /// Peer display name in the header (defaults to hostname).
     #[arg(short = 'n', long)]
@@ -83,6 +88,22 @@ impl Cli {
         self.audio || self.audio_out.is_some()
     }
 
+    /// Link quantum and display label, honoring --meter over --quantum.
+    pub fn resolved_meter(&self) -> Result<(f64, String), String> {
+        match &self.meter {
+            Some(s) => {
+                let m = crate::meter::Meter::parse(s)?;
+                Ok((m.quantum(), m.label()))
+            }
+            None => {
+                if !self.quantum.is_finite() || self.quantum <= 0.0 {
+                    return Err(format!("quantum must be positive, got {}", self.quantum));
+                }
+                Ok((self.quantum, crate::meter::label_for_quantum(self.quantum)))
+            }
+        }
+    }
+
     pub fn preset_idx(&self) -> Result<usize, String> {
         crate::sequencer::preset_index(&self.preset).ok_or_else(|| {
             format!(
@@ -129,6 +150,38 @@ mod tests {
         assert_eq!(c.quantum, 8.0);
         assert_eq!(c.name.as_deref(), Some("foo"));
         assert!(c.no_tui);
+    }
+
+    #[test]
+    fn meter_sets_quantum_and_label() {
+        let c = parse(&["--meter", "5/4"]);
+        assert_eq!(c.resolved_meter(), Ok((5.0, "5/4".into())));
+        let c = parse(&["--meter", "7/8"]);
+        assert_eq!(c.resolved_meter(), Ok((3.5, "7/8".into())));
+    }
+
+    #[test]
+    fn default_meter_is_four_four() {
+        let c = parse(&[]);
+        assert_eq!(c.resolved_meter(), Ok((4.0, "4/4".into())));
+    }
+
+    #[test]
+    fn bare_quantum_gets_a_meter_label() {
+        let c = parse(&["--quantum", "5"]);
+        assert_eq!(c.resolved_meter(), Ok((5.0, "5/4".into())));
+    }
+
+    #[test]
+    fn invalid_meter_is_error() {
+        let c = parse(&["--meter", "4/5"]);
+        assert!(c.resolved_meter().is_err());
+    }
+
+    #[test]
+    fn meter_conflicts_with_quantum() {
+        let r = Cli::try_parse_from(["linkclihost", "--meter", "5/4", "--quantum", "4"]);
+        assert!(r.is_err());
     }
 
     #[test]

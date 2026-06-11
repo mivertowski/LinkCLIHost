@@ -28,6 +28,7 @@ cargo build --release
 ./target/release/linkclihost --log run.csv         # CSV instead of JSONL
 ./target/release/linkclihost --no-tui              # plain stdout, useful for piping
 ./target/release/linkclihost --quantum 8 --name studio
+./target/release/linkclihost --meter 5/4           # odd meters: 5/4, 7/8, 6/8, ...
 
 ./target/release/linkclihost --list-midi-ports     # enumerate MIDI outputs
 ./target/release/linkclihost --midi-out "Midi Through"   # 24 PPQN clock locked to Link
@@ -35,6 +36,7 @@ cargo build --release
 ./target/release/linkclihost --list-audio-devices  # enumerate audio outputs
 ./target/release/linkclihost --audio               # drum sequencer on default device
 ./target/release/linkclihost --audio-out pipewire --preset breaks --gain 0.6
+./target/release/linkclihost --meter 7/8 --audio --midi-out 0   # odd-meter soak
 ```
 
 ### Keys
@@ -58,7 +60,8 @@ If stdout is not a TTY (piped or redirected), the program automatically falls ba
 - **Uptime** — since this process started
 - **Tempo σ** — standard deviation of every tempo we've seen this session
 - **Last Δ** — most recent tempo change and timestamp
-- **Sequencer / Sync out** — the 4×16 drum grid with the currently sounding step highlighted, the active preset, the audio device, and MIDI clock jitter (mean / max / last scheduling error vs the Link timeline)
+- **Meter** — time signature and the Link quantum it maps to, e.g. `7/8 (q=3.5)`
+- **Sequencer / Sync out** — the drum grid (one bar of 16ths, so 4×16 in 4/4, 4×20 in 5/4, 4×14 in 7/8) with the currently sounding step highlighted, the active preset, the audio device, and MIDI clock jitter (mean / max / last scheduling error vs the Link timeline)
 - **Recent tempo changes** — last five tempo deltas with wall-clock timestamps
 
 ## MIDI clock output
@@ -77,16 +80,29 @@ session host.
 
 ## Drum sequencer
 
-`--audio` (default output device) or `--audio-out <device>` enables a 16-step
-sequencer with four synthesized drum tracks — kick, snare, closed hat, tom —
-rendered by a tiny built-in synth (no samples). Steps are 16th notes derived
-from the session *phase*, so every peer that joins the same Link session hears
-the same step at the same time; the audio callback maps each buffer (including
-reported output latency) to a Link beat range and triggers steps
-sample-accurately. Transport stopped = silence; voices ring out naturally.
+`--audio` (default output device) or `--audio-out <device>` enables a
+one-bar step sequencer with four synthesized drum tracks — kick, snare,
+closed hat, tom — rendered by a tiny built-in synth (no samples). Steps are
+16th notes derived from the session *phase*, so every peer that joins the
+same Link session hears the same step at the same time; the audio callback
+maps each buffer (including reported output latency) to a Link beat range
+and triggers steps sample-accurately. Transport stopped = silence; voices
+ring out naturally.
 
 Presets (`--preset`, cycle live with `p`): `four-floor`, `backbeat`, `breaks`,
 `tom-jam`.
+
+### Odd meters
+
+Link has no meter concept of its own — just a *quantum* (quarter-note beats
+per bar) — so `--meter N/D` simply maps the time signature onto it: `5/4` →
+quantum 5, `7/8` → quantum 3.5, `6/8` → quantum 3. The sequencer bar length
+follows (20, 14, and 12 sixteenths respectively; max 32, i.e. up to 8/4).
+All four preset names have hand-written variants for 3/4 & 6/8, 7/8
+(grouped 2+2+3), 4/4, and 5/4 (grouped 3+2); any other meter tiles the 4/4
+pattern across the bar. Other Link peers just see the quantum, so a peer
+running plain `--quantum 5` lands on the same downbeats as one running
+`--meter 5/4`.
 
 ## Manual test recipe
 
@@ -115,7 +131,8 @@ CSV (`.csv` extension): columns are `timestamp_utc,event,bpm_from,bpm_to,peer_co
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-q`, `--quantum <BEATS>` | `4` | Beats per cycle (musical bar). |
+| `-q`, `--quantum <BEATS>` | `4` | Beats per cycle (musical bar), in quarter notes. |
+| `--meter <N/D>` | `4/4` | Time signature, e.g. `5/4`, `7/8`, `6/8`. Sets quantum and bar length; mutually exclusive with `--quantum`. |
 | `-n`, `--name <NAME>` | hostname | Peer display name in the header. |
 | `--log <PATH>` | none | Append events to file. Format inferred from extension. |
 | `--no-tui` | off | Disable TUI; print events to stdout. |
@@ -133,7 +150,7 @@ CSV (`.csv` extension): columns are `timestamp_utc,event,bpm_from,bpm_to,peer_co
 ## Tests
 
 ```bash
-cargo test                                                # unit tests (~69)
+cargo test                                                # unit tests (~90)
 cargo test --release --test smoke -- --ignored            # binary smoke test
 ```
 

@@ -2,7 +2,7 @@ pub mod widgets;
 
 use crate::app::TempoChange;
 use crate::midi_clock::MidiClockSnapshot;
-use crate::sequencer::{STEPS, TRACKS};
+use crate::sequencer::{MAX_STEPS, TRACKS};
 use ratatui::Frame;
 use std::time::Duration;
 
@@ -13,7 +13,9 @@ pub const MIN_HEIGHT: u16 = 26;
 #[derive(Debug, Clone)]
 pub struct SeqDisplay {
     pub preset_name: &'static str,
-    pub pattern: [[bool; STEPS]; TRACKS],
+    pub pattern: [[bool; MAX_STEPS]; TRACKS],
+    /// Sixteenths per bar; only the first `steps` columns of `pattern` are live.
+    pub steps: usize,
     /// Step currently sounding, or -1 while transport is stopped.
     pub current_step: i64,
     pub muted: bool,
@@ -29,6 +31,8 @@ pub struct Snapshot {
     pub beat: f64,
     pub phase: f64,
     pub quantum: f64,
+    /// Time-signature label, e.g. "4/4", "7/8".
+    pub meter_label: String,
     pub playing: bool,
     pub peers: u64,
     pub link_clock_micros: i64,
@@ -78,6 +82,7 @@ mod tests {
             beat: 0.0,
             phase: 0.0,
             quantum: 4.0,
+            meter_label: "4/4".into(),
             playing: false,
             peers: 0,
             link_clock_micros: 0,
