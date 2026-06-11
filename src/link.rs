@@ -6,7 +6,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 pub struct LinkSession {
-    link: AblLink,
+    link: Arc<AblLink>,
     state: SessionState,
     quantum: f64,
 }
@@ -18,7 +18,7 @@ impl LinkSession {
         shared: Arc<Mutex<AppState>>,
         events: Option<Sender<Event>>,
     ) -> Self {
-        let link = AblLink::new(initial_bpm);
+        let link = Arc::new(AblLink::new(initial_bpm));
 
         let s_tempo = shared.clone();
         let e_tempo = events.clone();
@@ -87,6 +87,35 @@ impl LinkSession {
 
     pub fn online(&self) -> bool {
         true
+    }
+
+    /// Shared handle for other threads (MIDI clock, audio callback).
+    /// `AblLink` is thread-safe; each consumer keeps its own `SessionState`.
+    pub fn handle(&self) -> Arc<AblLink> {
+        self.link.clone()
+    }
+
+    /// Toggle Link transport, requesting beat 0 at the start time so the
+    /// session phase realigns (quantized when other peers are present).
+    pub fn toggle_playing(&mut self) {
+        self.link.capture_app_session_state(&mut self.state);
+        let now = self.link.clock_micros();
+        if self.state.is_playing() {
+            self.state.set_is_playing(false, now);
+        } else {
+            self.state
+                .set_is_playing_and_request_beat_at_time(true, now, 0.0, self.quantum);
+        }
+        self.link.commit_app_session_state(&self.state);
+    }
+
+    /// Nudge the session tempo by `delta` BPM (clamped to Link's 20..=999 range).
+    pub fn nudge_tempo(&mut self, delta: f64) {
+        self.link.capture_app_session_state(&mut self.state);
+        let now = self.link.clock_micros();
+        let bpm = (self.state.tempo() + delta).clamp(20.0, 999.0);
+        self.state.set_tempo(bpm, now);
+        self.link.commit_app_session_state(&self.state);
     }
 }
 
